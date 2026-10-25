@@ -1,0 +1,14 @@
+# Dipendenze di FOX.
+#
+# llama-cpp-python NON va qui: lo installa il workflow con l'indice dei wheel
+# precompilati, diverso fra Windows (cpu) e macOS (metal). Se lo aggiungi a
+# questo file, pip prova a compilarlo da sorgente e il build fallisce.
+
+PySide6>=6.6,<7          # interfaccia
+keyring>=24              # chiavi API nel keychain di sistema
+numpy>=1.24              # audio
+sounddevice>=0.4.6       # microfono
+faster-whisper>=1.0      # trascrizione offline, senza torch
+anthropic>=0.40          # provider Anthropic
+openai>=1.40             # provider OpenAI e NVIDIA NIM
+pynput>=1.7              # scorciatoia globale

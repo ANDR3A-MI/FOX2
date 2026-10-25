@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Build
+build/
+dist/
+dist_installer/
+*.spec.bak
+
+# Modelli scaricati: pesano centinaia di MB, non vanno nel repository
+*.gguf
+models/
+
+# Sistema
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
