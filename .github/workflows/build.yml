@@ -58,7 +58,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel
           pip install -r requirements.txt
-          pip install pyinstaller==6.11.1
+          # Non si fissa la versione: gli hook di PyInstaller devono stare al
+          # passo con numpy e con le altre dipendenze binarie, e una versione
+          # vecchia lascia fuori pezzi di numpy. pyinstaller-hooks-contrib
+          # porta gli hook di terze parti (ctranslate2, tokenizers).
+          pip install --upgrade pyinstaller pyinstaller-hooks-contrib
 
       - name: Installa llama-cpp-python dal wheel precompilato
         # --only-binary impedisce la compilazione C++, che sul runner impiega
@@ -152,7 +156,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel
           pip install -r requirements.txt
-          pip install pyinstaller==6.11.1
+          # Non si fissa la versione: gli hook di PyInstaller devono stare al
+          # passo con numpy e con le altre dipendenze binarie, e una versione
+          # vecchia lascia fuori pezzi di numpy. pyinstaller-hooks-contrib
+          # porta gli hook di terze parti (ctranslate2, tokenizers).
+          pip install --upgrade pyinstaller pyinstaller-hooks-contrib
 
       - name: Installa llama-cpp-python con accelerazione Metal
         # L'indice dei wheel Metal ogni tanto serve archivi troncati e pip
