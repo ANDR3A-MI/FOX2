@@ -61,10 +61,19 @@ jobs:
           pip install pyinstaller==6.11.1
 
       - name: Installa llama-cpp-python dal wheel precompilato
-        # --only-binary impedisce il fallback alla compilazione C++, che sul
-        # runner impiega 20 minuti e poi fallisce
+        # --only-binary impedisce la compilazione C++, che sul runner impiega
+        # 20 minuti e poi fallisce. --no-cache-dir evita che un download
+        # corrotto resti in cache e faccia fallire anche i tentativi dopo.
+        shell: bash
         run: |
-          pip install llama-cpp-python --only-binary=:all: --prefer-binary --extra-index-url ${{ env.LLAMA_WHL_CPU }}
+          for attempt in 1 2 3; do
+            echo "Tentativo $attempt"
+            pip install --no-cache-dir --only-binary=:all: llama-cpp-python \
+              --extra-index-url ${{ env.LLAMA_WHL_CPU }} && exit 0
+            sleep 5
+          done
+          echo "Il wheel non e' scaricabile dopo 3 tentativi."
+          exit 1
 
       - name: Compila con PyInstaller
         run: pyinstaller fox.spec --noconfirm --clean
@@ -117,9 +126,24 @@ jobs:
           pip install pyinstaller==6.11.1
 
       - name: Installa llama-cpp-python con accelerazione Metal
+        # L'indice dei wheel Metal ogni tanto serve archivi troncati e pip
+        # muore con "zlib.error: invalid block type". Si riprova, poi si
+        # ripiega sull'indice cpu, e in ultima istanza si compila: su macOS
+        # Xcode c'e' gia', quindi la compilazione riesce (ma richiede tempo).
+        env:
+          CMAKE_ARGS: "-DGGML_METAL=on"
         run: |
-          pip install llama-cpp-python --only-binary=:all: --prefer-binary --extra-index-url ${{ env.LLAMA_WHL_METAL }} \
-            || pip install llama-cpp-python --only-binary=:all: --prefer-binary --extra-index-url ${{ env.LLAMA_WHL_CPU }}
+          try_wheel () {
+            pip install --no-cache-dir --only-binary=:all: llama-cpp-python --extra-index-url "$1"
+          }
+          try_wheel "${{ env.LLAMA_WHL_METAL }}" && exit 0
+          echo "Wheel Metal non valido, riprovo."
+          sleep 5
+          try_wheel "${{ env.LLAMA_WHL_METAL }}" && exit 0
+          echo "Ripiego sull'indice cpu."
+          try_wheel "${{ env.LLAMA_WHL_CPU }}" && exit 0
+          echo "Nessun wheel utilizzabile: compilo da sorgente con Metal."
+          pip install --no-cache-dir --verbose llama-cpp-python
 
       - name: Compila con PyInstaller
         run: pyinstaller fox.spec --noconfirm --clean
@@ -149,6 +173,9 @@ jobs:
   # ------------------------------------------------------------------ release --
   release:
     needs: [meta, windows, macos]
+    # La release esce anche se il job macOS fallisce: cosi' un problema sul
+    # Mac non ti impedisce di scaricare l'exe gia' pronto.
+    if: always() && needs.windows.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
