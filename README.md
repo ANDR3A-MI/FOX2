@@ -7,10 +7,17 @@ facendo. Comandi vocali, AI locale gratuita o provider online.
 ## Funzioni
 
 - **AI locale integrata** (llama.cpp): gratis, senza chiavi, offline. Niente
-  Ollama o LM Studio: il modello gira dentro FOX e si scarica dalle
-  impostazioni.
+  Ollama o LM Studio: il modello gira dentro FOX. Scaricalo dalle impostazioni
+  oppure, se un `.gguf` ce l'hai già sul computer, aggiungilo con **Aggiungi
+  dal PC…**: FOX lo usa dove si trova, senza copiarlo.
 - **AI online**: Anthropic, OpenAI, **NVIDIA NIM**. Se un provider non
   risponde, FOX passa al successivo dell'ordine scelto nelle impostazioni.
+  Il pulsante **Carica modelli** chiede al provider quali modelli accetta la
+  tua chiave adesso, così quando un modello va in fine vita basta
+  riselezionarlo invece di aggiornare l'app.
+- **Diagnostica**: una scheda nelle impostazioni che riporta lo stato reale di
+  ogni componente — llama.cpp, microfono, Whisper, sintesi vocale, provider —
+  con l'errore vero e un pulsante per copiarlo.
 - **Comandi vocali**: clicca l'isola col tasto destro, premi "Voce" nella
   finestra, o usa `Ctrl+Shift+Spazio` (`Cmd+Shift+Spazio` su Mac). FOX smette
   di ascoltare da solo quando smetti di parlare. La trascrizione

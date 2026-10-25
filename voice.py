@@ -147,19 +147,64 @@ class Transcriber:
                     "faster-whisper non e' installato: il riconoscimento vocale "
                     "non e' disponibile in questa build."
                 ) from exc
-            self._model = WhisperModel(name, device="auto", compute_type="int8")
+            # Il primo caricamento scarica il modello da Hugging Face: serve
+            # la rete una volta sola, poi resta nella cache dell'utente.
+            try:
+                self._model = WhisperModel(name, device="auto", compute_type="int8")
+            except Exception:
+                # "auto" fallisce su alcune build senza CUDA: si ripiega su CPU.
+                self._model = WhisperModel(name, device="cpu", compute_type="int8")
             self._model_name = name
 
     def transcribe(self, audio: "np.ndarray") -> str:
         self.ensure_loaded()
         language = settings.get("whisper_language") or None
+        # Niente vad_filter: richiederebbe onnxruntime, e l'inizio e la fine
+        # del parlato li decide gia' il Recorder sul livello audio.
         segments, _info = self._model.transcribe(
-            audio, language=language, vad_filter=True, beam_size=1,
+            audio, language=language, beam_size=1,
         )
         return " ".join(segment.text.strip() for segment in segments).strip()
 
 
 transcriber = Transcriber()
+
+
+def input_devices() -> list[str]:
+    """Microfoni visti dal sistema, per la diagnostica."""
+    if sd is None:
+        return []
+    try:
+        return [
+            "%s (%d canali)" % (d["name"], d["max_input_channels"])
+            for d in sd.query_devices()
+            if d.get("max_input_channels", 0) > 0
+        ]
+    except Exception as exc:
+        return ["errore nell'elenco dispositivi: %s" % exc]
+
+
+def whisper_problem() -> str:
+    """Cosa impedisce al riconoscimento vocale di funzionare, se qualcosa."""
+    try:
+        import faster_whisper  # noqa: F401
+    except Exception as exc:
+        return "faster-whisper non si carica: %s" % exc
+    try:
+        import ctranslate2  # noqa: F401
+    except Exception as exc:
+        return "ctranslate2 non si carica (manca una libreria nativa): %s" % exc
+    return ""
+
+
+def tts_problem() -> str:
+    """Verifica che il sintetizzatore del sistema esista davvero."""
+    import shutil
+    if sys.platform == "darwin":
+        return "" if shutil.which("say") else "il comando 'say' non e' disponibile."
+    if sys.platform == "win32":
+        return "" if shutil.which("powershell") else "PowerShell non e' disponibile."
+    return "" if shutil.which("espeak-ng") else "espeak-ng non e' installato."
 
 
 # ------------------------------------------------------- sintesi vocale ----

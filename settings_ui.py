@@ -1,25 +1,31 @@
-"""Finestra delle impostazioni: provider, chiavi, modelli locali, voce."""
+"""Finestra delle impostazioni: provider, modelli locali, voce, diagnostica."""
 
 from __future__ import annotations
 
+import platform
+import shutil
+import sys
 import threading
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
-    QPushButton, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QProgressBar, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 import local_llm
+import providers
 import voice
-from settings import PROVIDER_LABELS, settings
+from settings import PROVIDER_LABELS, config_dir, models_dir, settings
 
 STYLE = """
 QDialog, QWidget { background: #0A0A0C; color: #ECEDF0; }
 QLabel { color: #ECEDF0; }
 QLabel[hint="true"] { color: rgba(236,237,240,0.45); }
-QLineEdit, QComboBox, QListWidget {
+QLineEdit, QComboBox, QListWidget, QTextBrowser {
     background: rgba(255,255,255,0.055);
     border: 1px solid rgba(255,255,255,0.10);
     border-radius: 8px; padding: 6px 9px; color: #ECEDF0;
@@ -33,10 +39,11 @@ QPushButton:hover { background: rgba(255,255,255,0.14); }
 QPushButton[accent="true"] { background: rgba(255,138,43,0.92); color: #120A03; }
 QPushButton[accent="true"]:hover { background: rgba(255,154,70,1); }
 QPushButton[danger="true"] { background: rgba(255,86,86,0.16); color: #FF7A7A; }
+QPushButton[compact="true"] { padding: 6px 10px; }
 QTabWidget::pane { border: 1px solid rgba(255,255,255,0.09); border-radius: 10px; }
 QTabBar::tab {
     background: transparent; color: rgba(236,237,240,0.55);
-    padding: 7px 14px; border: none;
+    padding: 7px 13px; border: none;
 }
 QTabBar::tab:selected { color: #FF8A2B; }
 QProgressBar {
@@ -74,13 +81,34 @@ class DownloadWorker(QThread):
             self.done.emit(path.name)
 
 
+class ModelListWorker(QThread):
+    """Chiede al provider quali modelli accetta la chiave adesso."""
+
+    done = Signal(str, list)
+    failed = Signal(str, str)
+
+    def __init__(self, provider_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self.provider_id = provider_id
+
+    def run(self) -> None:
+        provider = providers.ALL[self.provider_id]
+        try:
+            names = provider.list_models()
+        except Exception as exc:
+            self.failed.emit(self.provider_id, str(exc))
+        else:
+            self.done.emit(self.provider_id, names)
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Impostazioni FOX")
         self.setStyleSheet(STYLE)
-        self.resize(560, 520)
+        self.resize(620, 580)
         self.downloader: DownloadWorker | None = None
+        self.model_workers: dict[str, ModelListWorker] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
@@ -90,6 +118,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._tab_providers(), "Provider")
         tabs.addTab(self._tab_local(), "AI locale")
         tabs.addTab(self._tab_voice(), "Voce")
+        tabs.addTab(self._tab_diagnostics(), "Diagnostica")
         root.addWidget(tabs, 1)
 
         row = QHBoxLayout()
@@ -109,7 +138,7 @@ class SettingsDialog(QDialog):
         row.addWidget(save_button)
         root.addLayout(row)
 
-    # -- provider -----------------------------------------------------------
+    # ------------------------------------------------------------ provider --
 
     def _tab_providers(self) -> QWidget:
         page = QWidget()
@@ -124,7 +153,7 @@ class SettingsDialog(QDialog):
 
         self.order_list = QListWidget()
         self.order_list.setDragDropMode(QListWidget.InternalMove)
-        self.order_list.setFixedHeight(130)
+        self.order_list.setFixedHeight(120)
         for key in settings.get("provider_order"):
             if key in PROVIDER_LABELS:
                 item = QListWidgetItem(PROVIDER_LABELS[key])
@@ -135,10 +164,13 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(9)
         self.key_fields: dict[str, QLineEdit] = {}
-        for key, placeholder in (
-            ("anthropic", "sk-ant-…"),
-            ("openai", "sk-…"),
-            ("nvidia", "nvapi-…"),
+        self.model_combos: dict[str, QComboBox] = {}
+        self.model_buttons: dict[str, QPushButton] = {}
+
+        for key, placeholder, setting_key in (
+            ("anthropic", "sk-ant-…", "model_anthropic"),
+            ("openai", "sk-…", "model_openai"),
+            ("nvidia", "nvapi-…", "model_nvidia"),
         ):
             field = QLineEdit()
             field.setEchoMode(QLineEdit.Password)
@@ -146,33 +178,87 @@ class SettingsDialog(QDialog):
             if settings.api_key(key):
                 field.setText(settings.api_key(key))
             self.key_fields[key] = field
-            form.addRow(PROVIDER_LABELS[key], field)
+            form.addRow("Chiave %s" % PROVIDER_LABELS[key], field)
 
-        self.model_fields: dict[str, QLineEdit] = {}
-        for key, setting_key in (
-            ("anthropic", "model_anthropic"),
-            ("openai", "model_openai"),
-            ("nvidia", "model_nvidia"),
-        ):
-            field = QLineEdit(str(settings.get(setting_key)))
-            self.model_fields[setting_key] = field
-            form.addRow("Modello %s" % PROVIDER_LABELS[key], field)
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.addItem(str(settings.get(setting_key)))
+            combo.setCurrentText(str(settings.get(setting_key)))
+            self.model_combos[setting_key] = combo
+
+            button = QPushButton("Carica modelli")
+            button.setProperty("compact", True)
+            button.clicked.connect(lambda _=False, k=key: self._load_models(k))
+            self.model_buttons[key] = button
+
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.addWidget(combo, 1)
+            row.addWidget(button)
+            holder = QWidget()
+            holder.setLayout(row)
+            form.addRow("Modello %s" % PROVIDER_LABELS[key], holder)
+
         layout.addLayout(form)
+
+        self.models_note = self._hint(
+            "I cataloghi cambiano: un modello valido oggi puo' sparire fra sei "
+            "mesi. 'Carica modelli' chiede al provider quali accetta la tua "
+            "chiave adesso."
+        )
+        layout.addWidget(self.models_note)
 
         if not settings.keyring_available:
             layout.addWidget(self._hint(
                 "Il keychain di sistema non e' disponibile: le chiavi restano "
                 "solo in memoria e vanno reinserite al prossimo avvio."
             ))
-        else:
-            layout.addWidget(self._hint(
-                "Le chiavi sono salvate nel keychain di sistema, mai in chiaro. "
-                "Le chiavi NVIDIA NIM si ottengono su build.nvidia.com."
-            ))
         layout.addStretch(1)
         return page
 
-    # -- AI locale ----------------------------------------------------------
+    def _load_models(self, provider_id: str) -> None:
+        if not settings.api_key(provider_id):
+            field = self.key_fields[provider_id]
+            if field.text().strip():
+                settings.set_api_key(provider_id, field.text())
+            else:
+                self.models_note.setText(
+                    "Incolla prima la chiave %s, poi premi di nuovo."
+                    % PROVIDER_LABELS[provider_id]
+                )
+                return
+
+        self.model_buttons[provider_id].setEnabled(False)
+        self.models_note.setText("Chiedo l'elenco a %s…" % PROVIDER_LABELS[provider_id])
+
+        worker = ModelListWorker(provider_id, self)
+        worker.done.connect(self._on_models)
+        worker.failed.connect(self._on_models_failed)
+        worker.finished.connect(lambda k=provider_id: self.model_buttons[k].setEnabled(True))
+        self.model_workers[provider_id] = worker
+        worker.start()
+
+    def _on_models(self, provider_id: str, names: list) -> None:
+        setting_key = {"anthropic": "model_anthropic",
+                       "openai": "model_openai",
+                       "nvidia": "model_nvidia"}[provider_id]
+        combo = self.model_combos[setting_key]
+        current = combo.currentText()
+        combo.clear()
+        combo.addItems(names)
+        if current in names:
+            combo.setCurrentText(current)
+        elif names:
+            combo.setCurrentIndex(0)
+        self.models_note.setText(
+            "%d modelli disponibili su %s. Scegline uno e salva."
+            % (len(names), PROVIDER_LABELS[provider_id])
+        )
+
+    def _on_models_failed(self, provider_id: str, message: str) -> None:
+        self.models_note.setText(message)
+
+    # ----------------------------------------------------------- AI locale --
 
     def _tab_local(self) -> QWidget:
         page = QWidget()
@@ -184,16 +270,28 @@ class SettingsDialog(QDialog):
             layout.addWidget(self._hint(local_llm.unavailable_reason()))
 
         layout.addWidget(QLabel("Modello attivo"))
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
         self.model_combo = QComboBox()
+        row.addWidget(self.model_combo, 1)
+
+        add_button = QPushButton("Aggiungi dal PC…")
+        add_button.setProperty("compact", True)
+        add_button.clicked.connect(self._add_model_from_disk)
+        row.addWidget(add_button)
+        layout.addLayout(row)
+
         self._refresh_models()
-        layout.addWidget(self.model_combo)
 
-        layout.addWidget(self._hint(
+        self.local_note = self._hint(
             "Il modello gira dentro FOX: niente Ollama, niente LM Studio, "
-            "nessuna chiave. Funziona anche senza connessione."
-        ))
+            "nessuna chiave. Se hai gia' un .gguf sul computer, aggiungilo da "
+            "qui: FOX lo usa dove si trova, senza copiarlo."
+        )
+        layout.addWidget(self.local_note)
 
-        layout.addWidget(QLabel("Scarica un modello"))
+        layout.addWidget(QLabel("Oppure scaricane uno"))
         self.catalog_combo = QComboBox()
         for info in local_llm.CATALOG:
             suffix = " — gia' installato" if info.installed else " — %d MB" % info.size_mb
@@ -205,13 +303,17 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.catalog_note)
         self._update_note()
 
-        row = QHBoxLayout()
+        buttons = QHBoxLayout()
         self.download_button = QPushButton("Scarica")
         self.download_button.setProperty("accent", True)
         self.download_button.clicked.connect(self._start_download)
-        row.addWidget(self.download_button)
-        row.addStretch(1)
-        layout.addLayout(row)
+        buttons.addWidget(self.download_button)
+
+        folder_button = QPushButton("Apri cartella modelli")
+        folder_button.clicked.connect(self._open_models_folder)
+        buttons.addWidget(folder_button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
 
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -224,17 +326,56 @@ class SettingsDialog(QDialog):
 
     def _refresh_models(self) -> None:
         self.model_combo.clear()
-        current = settings.get("local_model_file")
+        current = str(settings.get("local_model_file") or "")
         found = local_llm.installed_models()
         if not found:
             self.model_combo.addItem("Nessun modello installato", "")
             return
         for path in found:
-            self.model_combo.addItem(path.name, path.name)
-        if current:
-            index = self.model_combo.findData(current)
-            if index >= 0:
-                self.model_combo.setCurrentIndex(index)
+            value = local_llm.model_setting_value(path)
+            label = path.name if value == path.name else "%s  (%s)" % (path.name, path.parent)
+            self.model_combo.addItem(label, value)
+        index = self.model_combo.findData(current)
+        if index >= 0:
+            self.model_combo.setCurrentIndex(index)
+
+    def _add_model_from_disk(self) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Scegli un modello GGUF", str(Path.home()),
+            "Modelli GGUF (*.gguf);;Tutti i file (*)",
+        )
+        if not path_str:
+            return
+
+        path = Path(path_str)
+        problem = local_llm.looks_like_gguf(path)
+        if problem:
+            QMessageBox.warning(self, "FOX", problem)
+            return
+
+        settings.update(local_model_file=local_llm.model_setting_value(path))
+        self._refresh_models()
+        size_gb = path.stat().st_size / (1024 ** 3)
+        self.local_note.setText(
+            "Modello attivo: %s (%.1f GB). FOX lo legge da dove si trova: se "
+            "sposti o rinomini il file, torna qui a riselezionarlo."
+            % (path.name, size_gb)
+        )
+
+    def _open_models_folder(self) -> None:
+        folder = str(models_dir())
+        try:
+            if sys.platform == "win32":
+                import os
+                os.startfile(folder)                      # noqa: S606
+            elif sys.platform == "darwin":
+                import subprocess
+                subprocess.Popen(["open", folder])
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as exc:
+            QMessageBox.information(self, "FOX", "%s\n\n%s" % (folder, exc))
 
     def _selected_catalog(self) -> local_llm.ModelInfo:
         key = self.catalog_combo.currentData()
@@ -293,7 +434,7 @@ class SettingsDialog(QDialog):
         self.download_button.setText("Scarica")
         self.downloader = None
 
-    # -- voce ---------------------------------------------------------------
+    # ---------------------------------------------------------------- voce --
 
     def _tab_voice(self) -> QWidget:
         page = QWidget()
@@ -309,9 +450,9 @@ class SettingsDialog(QDialog):
         self.voice_out.setChecked(bool(settings.get("voice_output", True)))
         layout.addWidget(self.voice_out)
 
-        problem = voice.microphone_problem()
-        if problem:
-            layout.addWidget(self._hint("Microfono non disponibile: " + problem))
+        for problem in (voice.microphone_problem(), voice.whisper_problem()):
+            if problem:
+                layout.addWidget(self._hint("Non disponibile: " + problem))
 
         form = QFormLayout()
         form.setSpacing(9)
@@ -339,14 +480,112 @@ class SettingsDialog(QDialog):
         layout.addLayout(form)
 
         layout.addWidget(self._hint(
-            "Il riconoscimento vocale funziona offline. Un modello Whisper piu' "
-            "grande e' piu' preciso ma piu' lento. La scorciatoia si applica al "
-            "prossimo avvio."
+            "Il riconoscimento funziona offline, ma la prima volta scarica il "
+            "modello Whisper da internet: la prima frase puo' richiedere un "
+            "minuto. La scorciatoia si applica al prossimo avvio."
         ))
         layout.addStretch(1)
         return page
 
-    # -- comune -------------------------------------------------------------
+    # -------------------------------------------------------- diagnostica --
+
+    def _tab_diagnostics(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        layout.addWidget(self._hint(
+            "Stato di ogni componente. Se qualcosa non funziona, copia questo "
+            "testo: contiene l'errore vero, non una versione addolcita."
+        ))
+
+        self.report = QTextBrowser()
+        self.report.setFont(self.font())
+        layout.addWidget(self.report, 1)
+
+        row = QHBoxLayout()
+        refresh = QPushButton("Aggiorna")
+        refresh.clicked.connect(self._fill_report)
+        row.addWidget(refresh)
+
+        copy = QPushButton("Copia")
+        copy.setProperty("accent", True)
+        copy.clicked.connect(
+            lambda: QGuiApplication.clipboard().setText(self.report.toPlainText())
+        )
+        row.addWidget(copy)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self._fill_report()
+        return page
+
+    def _fill_report(self) -> None:
+        def mark(ok: bool) -> str:
+            return "OK  " if ok else "NO  "
+
+        lines: list[str] = []
+        lines.append("FOX — diagnostica")
+        lines.append("Sistema: %s %s (%s)" % (
+            platform.system(), platform.release(), platform.machine()))
+        lines.append("Python: %s" % sys.version.split()[0])
+        lines.append("Eseguibile congelato: %s" % bool(getattr(sys, "frozen", False)))
+        lines.append("Cartella impostazioni: %s" % config_dir())
+        lines.append("")
+
+        lines.append("AI LOCALE")
+        ok_llama = local_llm.available()
+        lines.append("%sllama.cpp" % mark(ok_llama))
+        if not ok_llama:
+            lines.append(local_llm.import_error().strip() or "causa sconosciuta")
+        found = local_llm.installed_models()
+        lines.append("%s%d modello/i trovato/i" % (mark(bool(found)), len(found)))
+        for path in found:
+            lines.append("      %s" % path)
+        active = settings.local_model_path()
+        lines.append("    attivo: %s" % (active or "nessuno"))
+        lines.append("")
+
+        lines.append("VOCE")
+        mic = voice.microphone_problem()
+        lines.append("%smicrofono%s" % (mark(not mic), "" if not mic else ": " + mic))
+        for device in voice.input_devices():
+            lines.append("      %s" % device)
+        whisper = voice.whisper_problem()
+        lines.append("%sfaster-whisper%s" % (
+            mark(not whisper), "" if not whisper else ": " + whisper))
+        lines.append("    modello Whisper: %s" % settings.get("whisper_model"))
+        tts = voice.tts_problem()
+        lines.append("%ssintesi vocale%s" % (mark(not tts), "" if not tts else ": " + tts))
+        voices = voice.list_voices()
+        lines.append("    %d voci di sistema" % len(voices))
+        if voices:
+            lines.append("      %s" % ", ".join(voices[:6]))
+        lines.append("")
+
+        lines.append("PROVIDER")
+        for provider in providers.router.order():
+            ready = provider.ready()
+            lines.append("%s%s%s" % (
+                mark(ready), provider.label,
+                "" if ready else " — " + provider.why_not_ready()))
+        lines.append("")
+
+        lines.append("ALTRO")
+        for module in ("PySide6", "numpy", "sounddevice", "keyring", "pynput",
+                       "anthropic", "openai", "ctranslate2"):
+            try:
+                __import__(module)
+            except Exception as exc:
+                lines.append("%s%s: %s" % (mark(False), module, exc))
+            else:
+                lines.append("%s%s" % (mark(True), module))
+        lines.append("%sffmpeg nel PATH" % mark(bool(shutil.which("ffmpeg"))))
+
+        self.report.setPlainText("\n".join(lines))
+
+    # -------------------------------------------------------------- comune --
 
     @staticmethod
     def _hint(text: str) -> QLabel:
@@ -367,9 +606,9 @@ class SettingsDialog(QDialog):
 
         settings.update(
             provider_order=order,
-            model_anthropic=self.model_fields["model_anthropic"].text().strip(),
-            model_openai=self.model_fields["model_openai"].text().strip(),
-            model_nvidia=self.model_fields["model_nvidia"].text().strip(),
+            model_anthropic=self.model_combos["model_anthropic"].currentText().strip(),
+            model_openai=self.model_combos["model_openai"].currentText().strip(),
+            model_nvidia=self.model_combos["model_nvidia"].currentText().strip(),
             local_model_file=self.model_combo.currentData() or "",
             voice_input=self.voice_in.isChecked(),
             voice_output=self.voice_out.isChecked(),

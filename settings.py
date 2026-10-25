@@ -38,8 +38,10 @@ DEFAULTS: dict[str, Any] = {
     "provider_order": ["local", "anthropic", "openai", "nvidia"],
     "model_anthropic": "claude-sonnet-5-5",
     "model_openai": "gpt-4o-mini",
-    "model_nvidia": "meta/llama-3.1-8b-instruct",
-    "local_model_file": "",          # nome del .gguf dentro models_dir()
+    "model_nvidia": "nvidia/nemotron-nano-3-30b-a3b",
+    # Nome del .gguf dentro models_dir(), oppure un percorso assoluto
+    # qualsiasi se il modello e' stato aggiunto dal PC.
+    "local_model_file": "",
     "local_context": 4096,
     "local_gpu_layers": -1,          # -1 = tutto su GPU se disponibile
     "system_prompt": (
@@ -164,11 +166,15 @@ class Settings:
         return False
 
     def local_model_path(self) -> Path | None:
+        """Il modello attivo: un file dentro models_dir() oppure, se l'utente
+        lo ha aggiunto dal PC, un percorso assoluto qualunque."""
         name = self.get("local_model_file")
         if not name:
             return None
-        path = models_dir() / name
-        return path if path.is_file() else None
+        candidate = Path(name)
+        if not candidate.is_absolute():
+            candidate = models_dir() / name
+        return candidate if candidate.is_file() else None
 
 
 settings = Settings()

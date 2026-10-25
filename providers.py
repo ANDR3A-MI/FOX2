@@ -69,6 +69,17 @@ class AnthropicProvider(Provider):
     def why_not_ready(self) -> str:
         return "Manca la chiave API. Incollala in Impostazioni."
 
+    def list_models(self) -> list[str]:
+        try:
+            import anthropic
+        except ImportError as exc:
+            raise ProviderError("Pacchetto anthropic non installato.") from exc
+        try:
+            client = anthropic.Anthropic(api_key=settings.api_key("anthropic"))
+            return sorted(model.id for model in client.models.list().data)
+        except Exception as exc:
+            raise ProviderError("Anthropic: %s" % exc) from exc
+
     def stream(self, messages: list[dict], system: str) -> Iterator[str]:
         try:
             import anthropic
@@ -101,16 +112,33 @@ class _OpenAICompatible(Provider):
     def why_not_ready(self) -> str:
         return "Manca la chiave API. Incollala in Impostazioni."
 
+    def _client(self):
+        from openai import OpenAI
+        return OpenAI(api_key=settings.api_key(self.id), base_url=self.base_url)
+
+    def list_models(self) -> list[str]:
+        """Modelli disponibili adesso per questa chiave.
+
+        Serve perche' i cataloghi cambiano: un modello che oggi funziona puo'
+        rispondere 410 fra sei mesi, e riscrivere il nome a mano ogni volta
+        non e' accettabile.
+        """
+        try:
+            from openai import OpenAI  # noqa: F401
+        except ImportError as exc:
+            raise ProviderError("Pacchetto openai non installato.") from exc
+        try:
+            return sorted(model.id for model in self._client().models.list().data)
+        except Exception as exc:
+            raise ProviderError("%s: %s" % (self.label, exc)) from exc
+
     def stream(self, messages: list[dict], system: str) -> Iterator[str]:
         try:
-            from openai import OpenAI
+            from openai import OpenAI  # noqa: F401
         except ImportError as exc:
             raise ProviderError("Pacchetto openai non installato.") from exc
 
-        client = OpenAI(
-            api_key=settings.api_key(self.id),
-            base_url=self.base_url,
-        )
+        client = self._client()
         payload = ([{"role": "system", "content": system}] if system else []) + messages
         try:
             response = client.chat.completions.create(
@@ -126,7 +154,25 @@ class _OpenAICompatible(Provider):
                 if text:
                     yield text
         except Exception as exc:
-            raise ProviderError("%s: %s" % (self.label, exc)) from exc
+            raise ProviderError(self._explain(exc)) from exc
+
+    def _explain(self, exc: Exception) -> str:
+        text = str(exc)
+        model = settings.get(self.model_key)
+        if "410" in text or "end of life" in text or "no longer available" in text:
+            return (
+                "%s: il modello '%s' non esiste piu'. Apri Impostazioni > Provider "
+                "e premi 'Carica modelli' per scegliere uno di quelli attivi."
+                % (self.label, model)
+            )
+        if "404" in text and "model" in text.lower():
+            return (
+                "%s: il modello '%s' non e' valido per questa chiave. "
+                "Premi 'Carica modelli' nelle impostazioni." % (self.label, model)
+            )
+        if "401" in text or "403" in text:
+            return "%s: la chiave API non e' valida o non ha accesso a questo modello." % self.label
+        return "%s: %s" % (self.label, text)
 
 
 class OpenAIProvider(_OpenAICompatible):

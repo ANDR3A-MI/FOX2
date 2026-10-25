@@ -16,13 +16,29 @@ from typing import Callable, Iterator
 
 from settings import models_dir, settings
 
-try:
-    from llama_cpp import Llama
-except Exception as exc:                            # pragma: no cover
-    Llama = None
-    _IMPORT_ERROR = exc
-else:
-    _IMPORT_ERROR = None
+# L'import e' pigro: dentro un eseguibile PyInstaller il caricamento delle
+# librerie native puo' fallire, e farlo qui all'avvio renderebbe illeggibile
+# l'errore. Cosi' invece conserviamo il traceback completo e lo mostriamo
+# nella diagnostica.
+_Llama = None
+_IMPORT_ERROR: str = ""
+_import_done = False
+
+
+def _load_llama():
+    global _Llama, _IMPORT_ERROR, _import_done
+    if _import_done:
+        return _Llama
+    _import_done = True
+    try:
+        from llama_cpp import Llama
+    except Exception:
+        import traceback
+        _IMPORT_ERROR = traceback.format_exc()
+        _Llama = None
+    else:
+        _Llama = Llama
+    return _Llama
 
 
 @dataclass(frozen=True)
@@ -78,20 +94,58 @@ CATALOG: tuple[ModelInfo, ...] = (
 
 
 def installed_models() -> list[Path]:
-    """Tutti i .gguf presenti, anche quelli messi a mano dall'utente."""
-    return sorted(models_dir().glob("*.gguf"))
+    """I .gguf nella cartella modelli, piu' quello aggiunto dal PC se e'
+    altrove e risulta ancora al suo posto."""
+    found = sorted(models_dir().glob("*.gguf"))
+    external = settings.local_model_path()
+    if external is not None and external.parent != models_dir():
+        found.append(external)
+    return found
+
+
+def model_setting_value(path: Path) -> str:
+    """Come salvare un modello nelle impostazioni: solo il nome se sta nella
+    cartella di FOX, il percorso intero se l'utente lo tiene altrove."""
+    path = Path(path)
+    return path.name if path.parent == models_dir() else str(path)
+
+
+def looks_like_gguf(path: Path) -> str:
+    """Controllo rapido prima di accettare un file scelto dall'utente.
+    Restituisce una stringa vuota se va bene, altrimenti il motivo."""
+    path = Path(path)
+    if not path.is_file():
+        return "Il file non esiste."
+    if path.suffix.lower() != ".gguf":
+        return "Serve un file .gguf. I formati .bin, .safetensors e .pth non si usano qui."
+    try:
+        with open(path, "rb") as handle:
+            magic = handle.read(4)
+    except OSError as exc:
+        return "Il file non e' leggibile: %s" % exc
+    if magic != b"GGUF":
+        return "Il file ha estensione .gguf ma non ne ha il contenuto: potrebbe essere un download interrotto."
+    return ""
 
 
 def available() -> bool:
-    return Llama is not None
+    return _load_llama() is not None
+
+
+def import_error() -> str:
+    """Traceback completo dell'import fallito, per la diagnostica."""
+    _load_llama()
+    return _IMPORT_ERROR
 
 
 def unavailable_reason() -> str:
-    if Llama is not None:
+    if available():
         return ""
+    last = (_IMPORT_ERROR or "").strip().splitlines()
+    detail = last[-1] if last else "causa sconosciuta"
     return (
-        "llama-cpp-python non e' installato in questa build. "
-        "Dettaglio: %s" % _IMPORT_ERROR
+        "llama.cpp non si carica in questa build. %s "
+        "Il traceback completo e' in Impostazioni > Diagnostica." % detail
     )
 
 
@@ -167,7 +221,8 @@ class LocalLLM:
             self._loaded_path = None
 
     def ensure_loaded(self) -> None:
-        if Llama is None:
+        llama_class = _load_llama()
+        if llama_class is None:
             raise RuntimeError(unavailable_reason())
 
         path = settings.local_model_path()
@@ -179,12 +234,12 @@ class LocalLLM:
                     "Impostazioni > AI locale."
                 )
             path = found[0]
-            settings.update(local_model_file=path.name)
+            settings.update(local_model_file=model_setting_value(path))
 
         with self._lock:
             if self._llm is not None and self._loaded_path == path:
                 return
-            self._llm = Llama(
+            self._llm = llama_class(
                 model_path=str(path),
                 n_ctx=int(settings.get("local_context", 4096)),
                 n_gpu_layers=int(settings.get("local_gpu_layers", -1)),

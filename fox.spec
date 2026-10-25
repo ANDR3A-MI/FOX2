@@ -35,21 +35,26 @@ def try_collect(label, fn, *args, **kwargs):
         return []
 
 
-# --- AI locale: le librerie native di llama.cpp non vengono trovate da sole ---
+# --- AI locale -------------------------------------------------------------
+# Solo collect_dynamic_libs, MAI collect_data_files: quest'ultimo raccoglie gli
+# stessi .dll/.dylib anche come dati, e la doppia copia fa fallire l'import con
+# "cannot load module more than once per process".
 binaries += try_collect("llama_cpp (binari)", collect_dynamic_libs, "llama_cpp")
-datas += try_collect("llama_cpp (dati)", collect_data_files, "llama_cpp")
-hiddenimports += ["llama_cpp", "llama_cpp.llama_cpp", "diskcache"]
+hiddenimports += ["llama_cpp", "diskcache"]
 
-# --- Riconoscimento vocale: Whisper porta con sé file di dati (filtri mel, tokenizer) ---
-for pkg in ("whisper", "faster_whisper", "tiktoken_ext", "tiktoken_ext.openai_public"):
+# --- Riconoscimento vocale -------------------------------------------------
+# faster-whisper usa ctranslate2, che è un'estensione C con librerie native.
+binaries += try_collect("ctranslate2 (binari)", collect_dynamic_libs, "ctranslate2")
+hiddenimports += ["ctranslate2"]
+for pkg in ("faster_whisper", "tokenizers", "huggingface_hub"):
     datas += try_collect("%s (dati)" % pkg, collect_data_files, pkg)
     hiddenimports += try_collect("%s (moduli)" % pkg, collect_submodules, pkg)
 
-# --- Audio: portaudio è una DLL/dylib separata ---
+# --- Audio: portaudio è una DLL/dylib separata, in un pacchetto a parte -----
 binaries += try_collect("sounddevice", collect_dynamic_libs, "sounddevice")
-binaries += try_collect("soundfile", collect_dynamic_libs, "soundfile")
 datas += try_collect("sounddevice (dati)", collect_data_files, "sounddevice")
-datas += try_collect("soundfile (dati)", collect_data_files, "soundfile")
+datas += try_collect("_sounddevice_data", collect_data_files, "_sounddevice_data")
+hiddenimports += ["_sounddevice_data"]
 
 # --- Keychain: i backend si importano dinamicamente, PyInstaller non li vede ---
 hiddenimports += try_collect("keyring", collect_submodules, "keyring.backends")
