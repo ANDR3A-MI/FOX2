@@ -79,8 +79,18 @@ datas += data_files("sounddevice")
 datas += data_files("_sounddevice_data")
 hiddenimports += ["_sounddevice_data"]
 
-# --- numpy: lo raccoglie l'hook di PyInstaller, qui si dichiara solo ---------
-hiddenimports += ["numpy"]
+# --- numpy ------------------------------------------------------------------
+# L'hook di PyInstaller resta indietro rispetto alle versioni nuove di numpy e
+# lascia fuori sottomoduli come numpy._core._exceptions. Il risultato è
+# "ImportError: cannot load module more than once per process", che è il
+# messaggio con cui numpy riveste il vero errore ("No module named
+# numpy._core._exceptions"). Raccoglierli esplicitamente lo evita, e siccome
+# llama.cpp e faster-whisper importano numpy, rimette in piedi anche quelli.
+hiddenimports += try_collect(
+    "numpy (moduli)", collect_submodules, "numpy",
+    filter=lambda name: ".tests" not in name and "f2py" not in name,
+)
+binaries += try_collect("numpy (binari)", collect_dynamic_libs, "numpy")
 
 # --- Keychain: i backend si importano dinamicamente, PyInstaller non li vede ---
 hiddenimports += try_collect("keyring", collect_submodules, "keyring.backends")
