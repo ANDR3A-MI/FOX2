@@ -87,6 +87,35 @@ jobs:
           }
           "{0:N1} MB" -f ((Get-ChildItem dist\FOX -Recurse | Measure-Object Length -Sum).Sum / 1MB)
 
+      - name: Autodiagnosi dell'eseguibile
+        # Lancia l'exe appena compilato con --selftest: importa ogni pacchetto
+        # dentro il pacchetto reale e scrive cosa si carica e cosa no. Senza
+        # questo passo gli errori di import si scoprono solo dopo il download.
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Start-Process -FilePath "$PWD\dist\FOX\FOX.exe" -ArgumentList "--selftest" `
+            -WorkingDirectory "$PWD\dist\FOX" -Wait
+          $report = "$PWD\dist\FOX\fox-selftest.txt"
+          if (Test-Path $report) {
+            Write-Host "================ AUTODIAGNOSI ================"
+            Get-Content $report
+            Write-Host "=============================================="
+            Copy-Item $report "$PWD\fox-selftest-windows.txt"
+          } else {
+            Write-Host "L'eseguibile non ha prodotto fox-selftest.txt: e' uscito prima di scriverlo."
+          }
+
+      - name: Conserva l'autodiagnosi
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-windows
+          path: fox-selftest-windows.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Installa Inno Setup
         run: choco install innosetup --no-progress -y
 
@@ -147,6 +176,30 @@ jobs:
 
       - name: Compila con PyInstaller
         run: pyinstaller fox.spec --noconfirm --clean
+
+      - name: Autodiagnosi dell'eseguibile
+        continue-on-error: true
+        run: |
+          cd dist/FOX.app/Contents/MacOS
+          ./FOX --selftest || true
+          if [ -f fox-selftest.txt ]; then
+            echo "================ AUTODIAGNOSI ================"
+            cat fox-selftest.txt
+            echo "=============================================="
+            cp fox-selftest.txt "$GITHUB_WORKSPACE/fox-selftest-macos.txt"
+          else
+            echo "L'eseguibile non ha prodotto fox-selftest.txt."
+          fi
+
+      - name: Conserva l'autodiagnosi
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-macos
+          path: fox-selftest-macos.txt
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Firma ad-hoc
         # Senza firma, anche solo ad-hoc, su Apple Silicon il bundle viene ucciso all'avvio
