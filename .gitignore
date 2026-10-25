@@ -19,3 +19,6 @@ models/
 Thumbs.db
 .idea/
 .vscode/
+
+# Autodiagnosi prodotta da --selftest
+fox-selftest*.txt

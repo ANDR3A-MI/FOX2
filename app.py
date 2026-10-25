@@ -463,6 +463,12 @@ class Fox(QObject):
 # -------------------------------------------------------------------- main --
 
 def main() -> int:
+    # --selftest non apre nessuna finestra: scrive la diagnostica ed esce.
+    # Lo usa la pipeline di build sull'eseguibile appena compilato.
+    if "--selftest" in sys.argv:
+        import diagnostics
+        return diagnostics.run_selftest()
+
     QApplication.setApplicationName(APP_TITLE)
     QApplication.setOrganizationName(APP_TITLE)
     app = QApplication(sys.argv)

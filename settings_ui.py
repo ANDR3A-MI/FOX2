@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import platform
-import shutil
 import sys
 import threading
 from pathlib import Path
@@ -16,10 +14,11 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
+import diagnostics
 import local_llm
 import providers
 import voice
-from settings import PROVIDER_LABELS, config_dir, models_dir, settings
+from settings import PROVIDER_LABELS, models_dir, settings
 
 STYLE = """
 QDialog, QWidget { background: #0A0A0C; color: #ECEDF0; }
@@ -522,68 +521,7 @@ class SettingsDialog(QDialog):
         return page
 
     def _fill_report(self) -> None:
-        def mark(ok: bool) -> str:
-            return "OK  " if ok else "NO  "
-
-        lines: list[str] = []
-        lines.append("FOX — diagnostica")
-        lines.append("Sistema: %s %s (%s)" % (
-            platform.system(), platform.release(), platform.machine()))
-        lines.append("Python: %s" % sys.version.split()[0])
-        lines.append("Eseguibile congelato: %s" % bool(getattr(sys, "frozen", False)))
-        lines.append("Cartella impostazioni: %s" % config_dir())
-        lines.append("")
-
-        lines.append("AI LOCALE")
-        ok_llama = local_llm.available()
-        lines.append("%sllama.cpp" % mark(ok_llama))
-        if not ok_llama:
-            lines.append(local_llm.import_error().strip() or "causa sconosciuta")
-        found = local_llm.installed_models()
-        lines.append("%s%d modello/i trovato/i" % (mark(bool(found)), len(found)))
-        for path in found:
-            lines.append("      %s" % path)
-        active = settings.local_model_path()
-        lines.append("    attivo: %s" % (active or "nessuno"))
-        lines.append("")
-
-        lines.append("VOCE")
-        mic = voice.microphone_problem()
-        lines.append("%smicrofono%s" % (mark(not mic), "" if not mic else ": " + mic))
-        for device in voice.input_devices():
-            lines.append("      %s" % device)
-        whisper = voice.whisper_problem()
-        lines.append("%sfaster-whisper%s" % (
-            mark(not whisper), "" if not whisper else ": " + whisper))
-        lines.append("    modello Whisper: %s" % settings.get("whisper_model"))
-        tts = voice.tts_problem()
-        lines.append("%ssintesi vocale%s" % (mark(not tts), "" if not tts else ": " + tts))
-        voices = voice.list_voices()
-        lines.append("    %d voci di sistema" % len(voices))
-        if voices:
-            lines.append("      %s" % ", ".join(voices[:6]))
-        lines.append("")
-
-        lines.append("PROVIDER")
-        for provider in providers.router.order():
-            ready = provider.ready()
-            lines.append("%s%s%s" % (
-                mark(ready), provider.label,
-                "" if ready else " — " + provider.why_not_ready()))
-        lines.append("")
-
-        lines.append("ALTRO")
-        for module in ("PySide6", "numpy", "sounddevice", "keyring", "pynput",
-                       "anthropic", "openai", "ctranslate2"):
-            try:
-                __import__(module)
-            except Exception as exc:
-                lines.append("%s%s: %s" % (mark(False), module, exc))
-            else:
-                lines.append("%s%s" % (mark(True), module))
-        lines.append("%sffmpeg nel PATH" % mark(bool(shutil.which("ffmpeg"))))
-
-        self.report.setPlainText("\n".join(lines))
+        self.report.setPlainText(diagnostics.report())
 
     # -------------------------------------------------------------- comune --
 

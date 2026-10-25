@@ -24,6 +24,9 @@ datas = []
 hiddenimports = []
 
 
+BINARY_SUFFIXES = (".pyd", ".so", ".dll", ".dylib")
+
+
 def try_collect(label, fn, *args, **kwargs):
     """Raccoglie senza far fallire il build se il pacchetto non c'è."""
     try:
@@ -33,6 +36,24 @@ def try_collect(label, fn, *args, **kwargs):
     except Exception as exc:                      # pacchetto assente o non installabile
         print("[fox.spec] %s non raccolto: %s" % (label, exc))
         return []
+
+
+def data_files(pkg):
+    """collect_data_files senza le estensioni binarie.
+
+    collect_data_files considera "dati" anche i .pyd e i .so del pacchetto.
+    Finiscono così nel bundle una seconda volta, accanto alla copia raccolta
+    correttamente fra i binaries, e Python fallisce l'import con
+    "cannot load module more than once per process". Il filtro evita il
+    doppione, che è la causa classica di quell'errore.
+    """
+    collected = try_collect("%s (dati)" % pkg, collect_data_files, pkg)
+    kept = [item for item in collected
+            if not str(item[0]).lower().endswith(BINARY_SUFFIXES)]
+    dropped = len(collected) - len(kept)
+    if dropped:
+        print("[fox.spec] %s: scartati %d file binari dai dati" % (pkg, dropped))
+    return kept
 
 
 # --- AI locale -------------------------------------------------------------
@@ -45,16 +66,21 @@ hiddenimports += ["llama_cpp", "diskcache"]
 # --- Riconoscimento vocale -------------------------------------------------
 # faster-whisper usa ctranslate2, che è un'estensione C con librerie native.
 binaries += try_collect("ctranslate2 (binari)", collect_dynamic_libs, "ctranslate2")
-hiddenimports += ["ctranslate2"]
-for pkg in ("faster_whisper", "tokenizers", "huggingface_hub"):
-    datas += try_collect("%s (dati)" % pkg, collect_data_files, pkg)
+binaries += try_collect("tokenizers (binari)", collect_dynamic_libs, "tokenizers")
+hiddenimports += ["ctranslate2", "tokenizers"]
+for pkg in ("faster_whisper", "huggingface_hub"):
+    datas += data_files(pkg)
     hiddenimports += try_collect("%s (moduli)" % pkg, collect_submodules, pkg)
 
 # --- Audio: portaudio è una DLL/dylib separata, in un pacchetto a parte -----
 binaries += try_collect("sounddevice", collect_dynamic_libs, "sounddevice")
-datas += try_collect("sounddevice (dati)", collect_data_files, "sounddevice")
-datas += try_collect("_sounddevice_data", collect_data_files, "_sounddevice_data")
+binaries += try_collect("_sounddevice_data", collect_dynamic_libs, "_sounddevice_data")
+datas += data_files("sounddevice")
+datas += data_files("_sounddevice_data")
 hiddenimports += ["_sounddevice_data"]
+
+# --- numpy: lo raccoglie l'hook di PyInstaller, qui si dichiara solo ---------
+hiddenimports += ["numpy"]
 
 # --- Keychain: i backend si importano dinamicamente, PyInstaller non li vede ---
 hiddenimports += try_collect("keyring", collect_submodules, "keyring.backends")
@@ -68,6 +94,7 @@ hiddenimports += try_collect("pynput", collect_submodules, "pynput")
 # --- Moduli di FOX ---
 hiddenimports += [
     "island", "providers", "local_llm", "voice", "settings", "settings_ui",
+    "diagnostics",
 ]
 
 # --- Risorse dell'app (icone, font, shader): incluse solo se esistono ---

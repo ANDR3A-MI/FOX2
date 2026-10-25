@@ -22,15 +22,19 @@ from typing import Callable
 
 from settings import settings
 
+_IMPORT_ERRORS: dict[str, str] = {}
+
 try:
     import numpy as np
-except Exception:                                   # pragma: no cover
+except Exception as exc:                            # pragma: no cover
     np = None
+    _IMPORT_ERRORS["numpy"] = "%s: %s" % (type(exc).__name__, exc)
 
 try:
     import sounddevice as sd
-except Exception:                                   # pragma: no cover
+except Exception as exc:                            # pragma: no cover
     sd = None
+    _IMPORT_ERRORS["sounddevice"] = "%s: %s" % (type(exc).__name__, exc)
 
 SAMPLE_RATE = 16000
 SILENCE_RMS = 0.012          # soglia sotto la quale si considera silenzio
@@ -44,10 +48,13 @@ def microphone_available() -> bool:
 
 
 def microphone_problem() -> str:
+    """Il motivo vero, non un'ipotesi: un pacchetto presente ma che non si
+    carica da' un errore diverso da uno assente, e saperlo cambia la cura."""
     if np is None:
-        return "numpy non e' installato."
+        return "numpy non si carica — %s" % _IMPORT_ERRORS.get("numpy", "causa sconosciuta")
     if sd is None:
-        return "sounddevice non e' installato o non trova un microfono."
+        return "sounddevice non si carica — %s" % _IMPORT_ERRORS.get(
+            "sounddevice", "causa sconosciuta")
     return ""
 
 
