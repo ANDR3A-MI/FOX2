@@ -1,0 +1,178 @@
+name: Build FOX installers
+
+on:
+  workflow_dispatch:          # Actions -> Build FOX installers -> Run workflow
+  push:
+    tags:
+      - "v*"                  # git tag v0.2.0 && git push origin v0.2.0
+
+permissions:
+  contents: write             # senza questo la release fallisce con 403
+
+env:
+  PYTHON_VERSION: "3.11"
+  LLAMA_WHL_CPU: "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+  LLAMA_WHL_METAL: "https://abetlen.github.io/llama-cpp-python/whl/metal"
+
+jobs:
+  # ---------------------------------------------------------------- versione --
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+            VERSION="${TAG#v}"
+            PRERELEASE="false"
+          else
+            TAG="build-${{ github.run_number }}"
+            VERSION="0.0.${{ github.run_number }}"
+            PRERELEASE="true"
+          fi
+          echo "tag=$TAG"               >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Versione: $VERSION (tag $TAG, prerelease $PRERELEASE)"
+
+  # ----------------------------------------------------------------- Windows --
+  windows:
+    needs: meta
+    runs-on: windows-latest
+    env:
+      FOX_VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Installa le dipendenze
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+          pip install pyinstaller==6.11.1
+
+      - name: Installa llama-cpp-python dal wheel precompilato
+        # --only-binary impedisce il fallback alla compilazione C++, che sul
+        # runner impiega 20 minuti e poi fallisce
+        run: |
+          pip install llama-cpp-python --only-binary=:all: --prefer-binary --extra-index-url ${{ env.LLAMA_WHL_CPU }}
+
+      - name: Compila con PyInstaller
+        run: pyinstaller fox.spec --noconfirm --clean
+
+      - name: Verifica che l'eseguibile esista
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\FOX\FOX.exe")) {
+            Get-ChildItem dist -Recurse -Depth 2 | Out-String | Write-Host
+            throw "dist\FOX\FOX.exe non e' stato prodotto"
+          }
+          "{0:N1} MB" -f ((Get-ChildItem dist\FOX -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+
+      - name: Installa Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Crea FOX-Setup.exe
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVersion=${{ needs.meta.outputs.version }}" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup ha restituito $LASTEXITCODE" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist_installer/FOX-Setup.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # ------------------------------------------------------------------- macOS --
+  macos:
+    needs: meta
+    runs-on: macos-14          # Apple Silicon. Per i Mac Intel aggiungi un job gemello su macos-13 con il wheel cpu
+    env:
+      FOX_VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Installa le dipendenze
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+          pip install pyinstaller==6.11.1
+
+      - name: Installa llama-cpp-python con accelerazione Metal
+        run: |
+          pip install llama-cpp-python --only-binary=:all: --prefer-binary --extra-index-url ${{ env.LLAMA_WHL_METAL }} \
+            || pip install llama-cpp-python --only-binary=:all: --prefer-binary --extra-index-url ${{ env.LLAMA_WHL_CPU }}
+
+      - name: Compila con PyInstaller
+        run: pyinstaller fox.spec --noconfirm --clean
+
+      - name: Firma ad-hoc
+        # Senza firma, anche solo ad-hoc, su Apple Silicon il bundle viene ucciso all'avvio
+        run: |
+          test -d dist/FOX.app || { ls -R dist | head -50; exit 1; }
+          codesign --force --deep --sign - dist/FOX.app
+          codesign --verify --verbose dist/FOX.app
+
+      - name: Crea FOX.dmg
+        run: |
+          mkdir -p dmg_stage
+          cp -R dist/FOX.app dmg_stage/
+          ln -s /Applications dmg_stage/Applications
+          hdiutil create -volname "FOX" -srcfolder dmg_stage -ov -format UDZO FOX.dmg
+          ls -lh FOX.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-installer
+          path: FOX.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  # ------------------------------------------------------------------ release --
+  release:
+    needs: [meta, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - run: ls -lhR artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: FOX ${{ needs.meta.outputs.version }}
+          prerelease: ${{ needs.meta.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            artifacts/FOX-Setup.exe
+            artifacts/FOX.dmg
+          body: |
+            Installer di FOX ${{ needs.meta.outputs.version }}.
+
+            **Windows** — scarica `FOX-Setup.exe`. Al primo avvio SmartScreen mostra un avviso:
+            "Ulteriori informazioni" poi "Esegui comunque". L'eseguibile non e' firmato.
+
+            **macOS** — scarica `FOX.dmg`, trascina FOX in Applicazioni, poi tasto destro
+            sull'app e "Apri". Consenti l'accesso al microfono quando viene richiesto.
+            Il bundle e' firmato solo ad-hoc, quindi il doppio click normale non basta.
