@@ -33,7 +33,11 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog commandline
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExeName}
+; L'icona si usa solo se c'e' davvero: senza questo controllo Inno si ferma
+; con "The system cannot find the path specified" invece di proseguire.
+#if FileExists(AddBackslash(SourcePath) + "assets\fox.ico")
 SetupIconFile=assets\fox.ico
+#endif
 
 [Languages]
 Name: "italiano"; MessagesFile: "compiler:Languages\Italian.isl"
